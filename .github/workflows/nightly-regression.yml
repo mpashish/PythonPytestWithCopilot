@@ -1,0 +1,122 @@
+name: Nightly Regression Pipeline
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC (adjust timezone as needed)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Test environment (staging/production)'
+        required: false
+        default: 'staging'
+        type: string
+      notify_on_failure:
+        description: 'Send notifications on failure'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  nightly-regression:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-xdist
+
+    - name: Install browser dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget gnupg
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
+
+    - name: Create test run metadata
+      run: |
+        echo "REGRESSION_RUN=true" >> $GITHUB_ENV
+        echo "RUN_DATE=$(date +'%Y-%m-%d_%H-%M-%S')" >> $GITHUB_ENV
+        echo "ENVIRONMENT=${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_ENV
+
+    - name: Run regression test suite
+      run: |
+        export REGRESSION_RUN=true
+        export ENVIRONMENT=${{ github.event.inputs.environment || 'staging' }}
+        pytest tests/ -v --tb=short --alluredir=allure-results \
+          --maxfail=3 -n 2 \
+          -m "not skip_ci" \
+          --junitxml=test-results.xml
+
+    - name: Generate Allure report
+      if: always()
+      run: |
+        pip install allure-pytest
+        allure generate allure-results/ -o allure-report/ --clean
+
+    - name: Upload regression results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: nightly-regression-${{ env.RUN_DATE }}
+        path: |
+          allure-results/
+          allure-report/
+          test-results.xml
+
+    - name: Send Slack notification on failure
+      if: failure() && (github.event.inputs.notify_on_failure == true || github.event_name == 'schedule')
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: |
+          🚨 Nightly Regression Failed
+          Repository: ${{ github.repository }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Date: ${{ env.RUN_DATE }}
+          Environment: ${{ env.ENVIRONMENT }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    - name: Send Slack notification on success
+      if: success() && github.event_name == 'schedule'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: |
+          ✅ Nightly Regression Passed
+          Repository: ${{ github.repository }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Date: ${{ env.RUN_DATE }}
+          Environment: ${{ env.ENVIRONMENT }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    - name: Regression Summary
+      if: always()
+      run: |
+        echo "## 🌙 Nightly Regression Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Date:** ${{ env.RUN_DATE }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment:** ${{ env.ENVIRONMENT }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Results:** [Download](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

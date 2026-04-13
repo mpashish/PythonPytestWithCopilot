@@ -1,0 +1,68 @@
+name: Report Generation Pipeline
+
+on:
+  workflow_run:
+    workflows: ["Test Execution Pipeline"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  generate-reports:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download test results from previous workflow
+      uses: actions/download-artifact@v3
+      with:
+        name: test-results-chrome
+        path: allure-results-chrome/
+
+    - name: Download Firefox test results
+      uses: actions/download-artifact@v3
+      continue-on-error: true
+      with:
+        name: test-results-firefox
+        path: allure-results-firefox/
+
+    - name: Merge Allure results
+      run: |
+        mkdir -p merged-allure-results
+        cp -r allure-results-chrome/allure-results/* merged-allure-results/ 2>/dev/null || true
+        cp -r allure-results-firefox/allure-results/* merged-allure-results/ 2>/dev/null || true
+
+    - name: Generate consolidated Allure report
+      run: |
+        pip install allure-pytest
+        allure generate merged-allure-results/ -o allure-report/ --clean
+
+    - name: Upload Allure report
+      uses: actions/upload-artifact@v3
+      with:
+        name: allure-report
+        path: allure-report/
+        retention-days: 30
+
+    - name: Deploy to GitHub Pages (Optional)
+      if: github.ref == 'refs/heads/main'
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: allure-report/
+        destination_dir: test-reports/${{ github.run_number }}
+
+    - name: Create test report summary
+      run: |
+        echo "## 📊 Test Report Generated" >> $GITHUB_STEP_SUMMARY
+        echo "- **Report URL:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **GitHub Pages:** ${{ github.server_url }}/${{ github.repository }}/pages/test-reports/${{ github.run_number }}/index.html" >> $GITHUB_STEP_SUMMARY
+        echo "- **Retention:** 30 days" >> $GITHUB_STEP_SUMMARY
+
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "Report generation failed. Check the workflow logs for details."

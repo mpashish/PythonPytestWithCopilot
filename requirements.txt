@@ -2,3 +2,7 @@ pytest
 selenium
 webdriver-manager
 allure-pytest
+pytest-xdist  # For parallel test execution
+flake8        # For code linting
+build         # For package building
+twine         # For PyPI publishing

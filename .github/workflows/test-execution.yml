@@ -1,0 +1,96 @@
+name: Test Execution Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      browser:
+        description: 'Browser to run tests on'
+        required: false
+        default: 'chrome'
+        type: choice
+        options:
+        - chrome
+        - firefox
+      environment:
+        description: 'Test environment'
+        required: false
+        default: 'staging'
+        type: string
+
+jobs:
+  test-execution:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        browser: [chrome, firefox]
+        include:
+          - browser: chrome
+            browser_option: "--browser chrome"
+          - browser: firefox
+            browser_option: "--browser firefox"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-xdist  # For parallel execution
+
+    - name: Install browser dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget gnupg
+        # Chrome dependencies
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
+        # Firefox (usually pre-installed)
+
+    - name: Run full test suite
+      run: |
+        export BROWSER=${{ matrix.browser }}
+        pytest tests/ -v --tb=short --alluredir=allure-results --maxfail=5 -n 2
+
+    - name: Generate Allure report
+      if: always()
+      run: |
+        pip install allure-pytest
+        allure generate allure-results/ -o allure-report/ --clean
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-${{ matrix.browser }}
+        path: |
+          allure-results/
+          allure-report/
+
+    - name: Test Summary
+      if: always()
+      run: |
+        echo "## Test Execution Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Browser:** ${{ matrix.browser }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Test Results:** [Download Artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
