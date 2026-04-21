@@ -7,6 +7,7 @@ from pages.FlightsPage import FlightsPage
 class TestFindFlights:
 
     @allure.story("Find flights with valid cities")
+    @pytest.mark.smoke
     def test_find_flights_valid(self, driver, base_url):
         driver.get(base_url)
         home_page = HomePage(driver)
